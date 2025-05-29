@@ -24,7 +24,7 @@ repositories {
 
 dependencies {
     testImplementation(kotlin("test"))
-    testImplementation("org.jetbrains.kotlinx:lincheck:2.40-SNAPSHOT")
+    testImplementation("org.jetbrains.kotlinx:lincheck:2.39")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 }
 
@@ -35,3 +35,4 @@ tasks.test {
 kotlin {
     jvmToolchain(17)
 }
+

@@ -6,6 +6,7 @@ import java.io.File
 import java.io.FileWriter
 import java.lang.Thread.sleep
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.reflect.KClass
 import kotlin.reflect.full.isSubclassOf
 import kotlin.time.Duration
@@ -15,7 +16,7 @@ import kotlin.time.TimeSource
 val TIMEOUT = 30.seconds
 
 class TestRunner {
-    
+
     @Test
     fun myTest() {
         val result = executeSingleTest(50)
@@ -30,25 +31,25 @@ class TestRunner {
             }
         }
     }
-    
+
     @Test
     fun collectTestResults() {
         val testClasses = findRunCheckerClasses()
         println("Found ${testClasses.size} test classes")
-        
+
         val executor = Executors.newFixedThreadPool(8)
         val futures = testClasses
             .filter { it.key < 100 }
             .map { entry ->
-            executor.submit<TestResult> { 
-                val a = executeSingleTest(entry.key) 
+            executor.submit<TestResult> {
+                val a = executeSingleTest(entry.key)
                 println("Test ${entry.key}: ${a.status.name}")
                 a
             }
         }
-        
+
         val results = futures.map { it.get() }
-        
+
         println(results)
 
         FileWriter("test_runner_results.csv").use { writer ->
@@ -61,63 +62,45 @@ class TestRunner {
         }
         executor.shutdown()
     }
-    
+
 }
 
 private fun executeSingleTest(testNr: Int): TestResult {
     val mark = TimeSource.Monotonic.markNow()
-    val processBuilder = ProcessBuilder(
-        "java",
-        "-cp",
-        System.getProperty("java.class.path"),
-        "altered.SingleTestExecutor",
-        testNr.toString()
-    )
-    
-    processBuilder.redirectErrorStream(true)
-    val process = processBuilder.start()
-    
-    val hook = Thread {
-        // Clean up child processes here
-        if (process.isAlive) {
-            process.destroyForcibly()
-        }
-    }
-    Runtime.getRuntime().addShutdownHook(hook)
-
     try {
-        val output = process.inputStream.bufferedReader().use { it.readText() }
+        val process = ProcessBuilder(
+            "java",
+            "-cp",
+            System.getProperty("java.class.path"),
+            "altered.SingleTestExecutor",
+            testNr.toString()
+        ).start()
 
-        while (process.isAlive && mark.elapsedNow() < TIMEOUT) {
-            sleep(100)
-        }
+        val completed = process.waitFor(TIMEOUT.inWholeSeconds, TimeUnit.SECONDS)
 
-        if (process.isAlive) {
+        if (!completed) {
             process.destroyForcibly()
-            return TestResult(testNr, TestResult.Status.TIMEOUT, mark.elapsedNow(), "")
+            return TestResult(testNr, TestResult.Status.TIMEOUT, mark.elapsedNow(), "Test timed out")
         }
 
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        return parseTestOutput(testNr, mark.elapsedNow(), output)
+    } catch (e: Exception) {
+        return TestResult(testNr, TestResult.Status.ERROR, mark.elapsedNow(), e.message ?: "Unknown error")
+    }
+}
 
-        val relevant = output.lines().let { lines ->
-            val doneIndex = lines.indexOfFirst { it.contains("DONE") }
-            if (doneIndex >= 0) {
-                lines.drop(doneIndex + 1).joinToString("\n")
-            } else {
-                ""
-            }
-        }
+private fun parseTestOutput(testNr: Int, duration: Duration, output: String): TestResult {
+    val lines = output.lines()
+    val statusLine = lines.find { it in setOf("SUCCESS", "DEADLOCK", "TIMEOUT", "ERROR") }
 
-        val first = relevant.lines()[0]
-        val message = relevant.lines().drop(1).joinToString("\n")
-
-        return when {
-            first.contains(TestResult.Status.SUCCESS.name) -> TestResult(testNr, TestResult.Status.SUCCESS, mark.elapsedNow(), "")
-            first.contains(TestResult.Status.DEADLOCK.name) -> TestResult(testNr, TestResult.Status.DEADLOCK, mark.elapsedNow(), message)
-            first.contains(TestResult.Status.ERROR.name) -> TestResult(testNr, TestResult.Status.ERROR, mark.elapsedNow(), message)
-            else -> TestResult(testNr, TestResult.Status.ERROR, mark.elapsedNow(), "COULDN'T FIND STATUS")
-        }
-    } finally {
-        Runtime.getRuntime().removeShutdownHook(hook)
+    return when (statusLine) {
+        "SUCCESS" -> TestResult(testNr, TestResult.Status.SUCCESS, duration, "")
+        "DEADLOCK" -> TestResult(testNr, TestResult.Status.DEADLOCK, duration,
+            lines.dropWhile { it != "DEADLOCK" }.drop(1).joinToString("\n"))
+        "TIMEOUT" -> TestResult(testNr, TestResult.Status.TIMEOUT, duration, "Test timed out")
+        else -> TestResult(testNr, TestResult.Status.ERROR, duration,
+            output.takeIf { it.isNotBlank() } ?: "No output from test")
     }
 }
 
@@ -136,7 +119,7 @@ data class TestResult(
 }
 
 
-// AI generated slop here 
+// AI generated slop here
 private fun findRunCheckerClasses(): Map<Int, KClass<out RunCheckerBase>> {
     val result = mutableMapOf<Int, KClass<out RunCheckerBase>>()
 
